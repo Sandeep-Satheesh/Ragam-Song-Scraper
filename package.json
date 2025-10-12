@@ -1,0 +1,21 @@
+{
+  "name": "ragam-se-scraper-js",
+  "version": "0.1.1",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "discover": "node src/examples_run.js"
+  },
+  "dependencies": {
+    "se-scraper": "github:NikolaiT/se-scraper",
+    "axios": "^1.4.0",
+    "cheerio": "1.0.0-rc.12",
+    "sqlite3": "^5.1.6",
+    "ytsr": "3.8.4",
+    "googleapis": "^124.0.0",
+    "dotenv": "^16.0.0",
+    "commander": "^11.0.0",
+    "p-retry": "^5.0.0"
+  }
+}
