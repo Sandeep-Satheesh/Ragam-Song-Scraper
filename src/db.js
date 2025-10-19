@@ -11,9 +11,20 @@ function initDB(){
   db.execAsync = promisify(db.exec.bind(db));
   db.closeAsync = promisify(db.close.bind(db));
   db.serialize(()=> {
+      db.run(`
+      CREATE TABLE IF NOT EXISTS songs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        composer TEXT,
+        notes TEXT,
+        youtube_link TEXT,
+        source_url TEXT NOT NULL,
+        ragam TEXT DEFAULT 'TBD',
+        discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(title, source_url)
+      );
+    `);
     db.run(`CREATE TABLE IF NOT EXISTS pages(url TEXT PRIMARY KEY, fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-    db.run(`CREATE TABLE IF NOT EXISTS titles(norm TEXT PRIMARY KEY, title TEXT, source_page TEXT, ragam TEXT, discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-    db.run(`CREATE TABLE IF NOT EXISTS videos(youtube_id TEXT PRIMARY KEY, youtube_url TEXT, title TEXT, ragam TEXT, source_page TEXT, added_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
   });
   return db;
 }

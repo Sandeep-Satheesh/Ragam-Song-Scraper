@@ -1,58 +1,82 @@
 #!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
+// index.js — run discovery, persist results, then call exporter
+
 const { program } = require('commander');
-require('dotenv').config();
 const { initDB } = require('./db');
-const { fetchHtml, politeSleep } = require('./fetcher');
-const { extractTitles, normalize } = require('./parser');
-const { searchYouTube } = require('./youtube');
-const { discover } = require('./discover');
-(async ()=>{
-  const db = initDB();
-  const MAX_PAGES_DEFAULT = parseInt(process.env.DEFAULT_NUM_PAGES || '5',10);
-  program.requiredOption('--ragam <name>').option('--seeds <file>').option('--max-pages <n>', String, String(MAX_PAGES_DEFAULT)).option('--out <file>','Output JSON file');
-  program.parse(process.argv);
-  const opts = program.opts();
+const { discoverAndExtract } = require('./discover');
+const exporter = require('./exporter');
+const utils = require('./utils');
+program
+  .requiredOption('--ragam <name>', 'Rāgam name to search')
+  .option('--max-pages <n>', 'pages per engine', String, '5')
+  .option('--model <name>', 'Local Ollama model', 'gemma3:4b') 
+  .parse(process.argv);
+
+const opts = program.opts();
+
+(async () => {
   const ragam = opts.ragam;
-  let seeds = [];
-  if(opts.seeds && fs.existsSync(opts.seeds)){
-    seeds = fs.readFileSync(opts.seeds,'utf-8').split('\n').map(s=>s.trim()).filter(Boolean);
-  }
-  const discovered = await discover(ragam, Math.max(1, Math.ceil(parseInt(opts.maxPages||opts.max_pages||MAX_PAGES_DEFAULT)/1)));
-  const pages = Array.from(new Set([...(seeds||[]), ...discovered])).slice(0, parseInt(opts.max_pages||opts.maxPages||MAX_PAGES_DEFAULT));
-  console.log('Pages to scan:', pages.length);
-  const runAsync = db.runAsync.bind(db);
-  const getAsync = db.getAsync.bind(db);
-  const allAsync = db.allAsync.bind(db);
-  for(const url of pages){
-    try{
-      const seen = await getAsync('SELECT 1 FROM pages WHERE url = ?', [url]);
-      if(seen){ console.log('skipping seen page', url); continue; }
-      console.log('fetching', url);
-      const html = await fetchHtml(url).catch(e=>{ console.warn('fetch failed',e.message||e); return null; });
-      await runAsync('INSERT OR IGNORE INTO pages(url) VALUES (?)', [url]); // mark even if fetch fails
-      if(!html) continue;
-      const titles = extractTitles(html);
-      for(const t of titles){
-        const norm = normalize(t);
-        const tseen = await getAsync('SELECT 1 FROM titles WHERE norm = ?', [norm]);
-        if(tseen) continue;
-        await runAsync('INSERT OR IGNORE INTO titles(norm,title,source_page,ragam) VALUES (?,?,?,?)', [norm,t,url,ragam]);
-        const q = `${t} ${ragam} song`;
-        const { id, url: yurl } = await searchYouTube(q);
-        if(id){
-          await runAsync('INSERT OR IGNORE INTO videos(youtube_id,youtube_url,title,ragam,source_page) VALUES (?,?,?,?,?)', [id,yurl,t,ragam,url]);
-          console.log('added', t, id);
-        }
-        await politeSleep();
+  const maxPages = Math.max(1, parseInt(opts.maxPages || opts.max_pages || '5', 10));
+  const model = opts.model;
+
+  // init DB
+  const db = initDB();
+  const run = db.runAsync.bind(db);
+  const get = db.getAsync.bind(db);
+  const all = db.allAsync.bind(db);
+
+  // ensure songs table exists (dedupe by title + source_url)
+
+  console.info(`Searching ragam="${ragam}" model="${model}" pagesPerEngine=${maxPages}`);
+
+  const results = await discoverAndExtract(ragam, maxPages, model);
+
+  console.info(`Discovered ${results.length} raw items from scraping.`);
+
+  let inserted = 0, skipped = 0;
+  for (const item of results) {
+    try {
+      const title = (item.title || '').trim();
+      if (!title) { skipped++; continue; }
+      const title_norm = utils.stripDiacriticsAndNoise(title);
+      const composer = item.composer;
+      const notes = item.notes;
+      const youtube_link = item.youtube_link;
+      const source_url = item.source_url || 'N/A';
+
+      // insert or ignore duplicate (unique constraint)
+      await run(
+        `INSERT OR IGNORE INTO songs (title, composer, notes, youtube_link, source_url, ragam)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [title_norm, composer, notes, youtube_link, source_url, ragam]
+      );
+
+      // mark page seen if URL is real
+      if (source_url) {
+        await run(`INSERT OR IGNORE INTO pages(url) VALUES (?)`, [source_url]);
       }
-      await politeSleep();
-    }catch(e){ console.warn('page loop error', e.message || e); }
+
+      // count inserted/confirmed
+      const exists = await get(`SELECT 1 FROM songs WHERE title = ? AND source_url = ? LIMIT 1`, [title_norm, source_url]);
+      if (exists) inserted++; else skipped++;
+    } catch (e) {
+      console.warn('error processing item', e && e.message ? e.message : e);
+    }
   }
-  const out = opts.out || `${ragam.toLowerCase().replace(/\s+/g,'_')}_videos.json`;
-  const rows = await allAsync('SELECT youtube_id,youtube_url,title,ragam,source_page FROM videos', []);
-  fs.writeFileSync(out, JSON.stringify(rows,null,2),'utf-8');
-  console.log('exported', rows.length, 'videos ->', out);
+
+  console.log(`Inserted/confirmed ${inserted} songs, skipped ${skipped}.`);
+
+  // export to JSON via exporter module
+  try {
+    await exporter.exportSongs(db, `${ragam.toLowerCase().replace(/\s+/g,'_')}_songs.json`);
+    console.log('Export complete.');
+  } catch (e) {
+    console.warn('export failed:', e && e.message ? e.message : e);
+  }
+
   await db.closeAsync();
-})();
+  console.log('Done.');
+})().catch(err => {
+  console.error('Fatal error:', err && err.stack ? err.stack : err);
+  process.exit(1);
+});
