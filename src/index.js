@@ -3,13 +3,12 @@
 
 const { program } = require('commander');
 const { initDB } = require('./db');
-const { discoverAndExtract } = require('./discover');
+const { discoverURLs, parseURLs } = require('./discover');
 const exporter = require('./exporter');
 const utils = require('./utils');
 program
   .requiredOption('--ragam <name>', 'Rāgam name to search')
-  .option('--max-pages <n>', 'pages per engine', String, '5')
-  .option('--model <name>', 'Local Ollama model', 'gemma3:4b') 
+  .option('--max-pages <n>', 'pages per engine', String, '2')
   .parse(process.argv);
 
 const opts = program.opts();
@@ -17,7 +16,6 @@ const opts = program.opts();
 (async () => {
   const ragam = opts.ragam;
   const maxPages = Math.max(1, parseInt(opts.maxPages || opts.max_pages || '5', 10));
-  const model = opts.model;
 
   // init DB
   const db = initDB();
@@ -27,11 +25,16 @@ const opts = program.opts();
 
   // ensure songs table exists (dedupe by title + source_url)
 
-  console.info(`Searching ragam="${ragam}" model="${model}" pagesPerEngine=${maxPages}`);
+  console.info(`Searching ragam="${ragam}" pagesPerEngine=${maxPages}`);
 
-  const results = await discoverAndExtract(ragam, maxPages, model);
+  const discoverResults = await discoverURLs(ragam, maxPages);
+  console.info(`Discovered ${urlSet.size} raw items from scraping.`);
 
-  console.info(`Discovered ${results.length} raw items from scraping.`);
+  await Promise.all(Array.from(discoverResults.results).map(async (url) => {
+    await db.run(`INSERT OR IGNORE INTO pages(url) VALUES (?)`, [url]);
+  }));
+
+  const results = await parseURLs(discoverResults.results, discoverResults.variants);
 
   let inserted = 0, skipped = 0;
   for (const item of results) {
@@ -50,11 +53,6 @@ const opts = program.opts();
          VALUES (?, ?, ?, ?, ?, ?)`,
         [title_norm, composer, notes, youtube_link, source_url, ragam]
       );
-
-      // mark page seen if URL is real
-      if (source_url) {
-        await run(`INSERT OR IGNORE INTO pages(url) VALUES (?)`, [source_url]);
-      }
 
       // count inserted/confirmed
       const exists = await get(`SELECT 1 FROM songs WHERE title = ? AND source_url = ? LIMIT 1`, [title_norm, source_url]);

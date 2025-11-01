@@ -24,56 +24,71 @@ function stripDiacritics(text) {
 }
 
 function cleanVisibleBody(html) {
-  const $ = cheerio.load(html);
+  const $ = cheerio.load(html, { decodeEntities: false });
 
-  // Focus on <body> if available
-  const $body = $("body").length ? $("body") : $.root();
+  // target <body> or root
+  const $body = $('body').length ? $('body') : $.root();
 
-  // Remove non-visible or useless elements
-  $body.find("script, style, noscript, iframe, svg, canvas, meta, link").remove();
+  // remove totally irrelevant tags
+  $body.find('script, noscript, iframe, style, link, meta, svg, canvas, form, input, textarea, button').remove();
 
-  // Remove comments
-  $body.contents().each((_, el) => {
-    if (el.type === "comment") $(el).remove();
+  // remove comments
+  $body.contents().each((_, node) => {
+    if (node.type === 'comment') $(node).remove();
   });
 
-  // Patterns for unwanted elements (nav, ads, footer, etc.)
-  const removePatterns = [
-    /(header|nav|footer|menu|aside)/i,
-    /(sidebar|advert|ads?|sponsor|subscribe|cookie|banner)/i,
-  ];
+  // helper checks
+  const styleHidden = (s) =>
+    !!s && /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0|height\s*:\s*0px|width\s*:\s*0px/i.test(s);
 
-  // Remove matching elements by tag name, id, or class
-  $body.find("*").each((_, el) => {
-    const tag = el.tagName || "";
-    const id = $(el).attr("id") || "";
-    const cls = $(el).attr("class") || "";
-    const haystack = `${tag} ${id} ${cls}`;
-    if (removePatterns.some((pat) => pat.test(haystack))) $(el).remove();
+  const classOrIdBoilerplate = (val) =>
+    !!val && /\b(header|nav|footer|menu|aside|sidebar|banner|advert|ads?|sponsor|subscribe|cookie|consent|promo|skip-nav)\b/i.test(val);
+
+  const attrHidden = ($el) => {
+    const role = ($el.attr('role') || '').toLowerCase();
+    return $el.attr('hidden') !== undefined
+      || ($el.attr('aria-hidden') || '').toLowerCase() === 'true'
+      || role === 'navigation' || role === 'banner' || role === 'complementary' || role === 'search';
+  };
+
+  // remove nodes likely not visible or boilerplate
+  $body.find('*').each((_, el) => {
+    const $el = $(el);
+    const style = ($el.attr('style') || '').toLowerCase();
+    const cls = ($el.attr('class') || '');
+    const id = ($el.attr('id') || '');
+
+    if (styleHidden(style) || classOrIdBoilerplate(`${id} ${cls}`) || attrHidden($el)) {
+      $el.remove();
+      return;
+    }
+
+    // remove nodes that are empty after trimming whitespace and have no children
+    const text = $el.text().replace(/\s+/g, '');
+    if (!text && $el.children().length === 0) $el.remove();
   });
 
-  // Collect paragraph-like text blocks
-  const keepTags = ["p", "div", "li", "article", "section", "h1", "h2", "h3", "h4", "h5", "h6"];
-  const blocks = [];
+  // collapse consecutive empty nodes and trim excessive attributes that may bloat
+  $body.find('*').each((_, el) => {
+    const $el = $(el);
 
-  $body.find(keepTags.join(",")).each((_, el) => {
-    const text = $(el).text().replace(/\s+/g, " ").trim();
-    if (text.length >= 15) blocks.push(text);
+    // drop event handlers and inline data attributes that are irrelevant
+    const attrs = $el.attr();
+    for (const a in attrs) {
+      if (/^on/i.test(a) || /^data-?_/i.test(a) || a === 'style' || a === 'role' || a === 'aria-hidden') {
+        $el.removeAttr(a);
+      }
+    }
   });
 
-  // Fallback if no blocks found
-  if (!blocks.length) {
-    const raw = $body.text().replace(/\s+/g, " ").trim();
-    if (raw) blocks.push(raw);
-  }
+  // final pass: remove any empty tags left
+  $body.find('*').each((_, el) => {
+    const $el = $(el);
+    if ($el.children().length === 0 && !$el.text().trim()) $el.remove();
+  });
 
-  // Deduplicate consecutive duplicates
-  const deduped = blocks.filter((b, i) => i === 0 || b !== blocks[i - 1]);
-
-  // Join blocks with double newline for readability
-  const cleanedText = deduped.join("\n\n");
-
-  return cleanedText;
+  // return the cleaned body as raw HTML including the <body> wrapper
+  return `<body>${$body.html() || ''}</body>`;
 }
 
 function stripDiacriticsAndNoise(s) {
