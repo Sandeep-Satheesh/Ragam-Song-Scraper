@@ -43,18 +43,16 @@ async function runOllamaModelViaClient(model, prompt, timeoutMs = 600000) {
   if (typeof ollamaClient.chat === 'function') {
     const messages = [
       { role: 'system', content: 'Return EXACTLY one JSON array and nothing else. Do not output extra commentary.' },
-      { role: 'user', content: prompt + '\n<JSON_END>' }
+      { role: 'user', content: prompt }
     ];
     const chatPayload = {
       model,
       messages,
-      options: { temperature: 0, top_p: 1, max_tokens: maxTokens, stop: ['<JSON_END>'] }
+      options: { temperature: 0, top_p: 1, max_tokens: maxTokens }
     };
     const res = await ollamaClient.chat(chatPayload);
     // normalize shapes
-    if (res?.choices?.[0]?.message?.content) return res.choices[0].message.content;
-    if (res?.choices?.[0]?.text) return res.choices[0].text;
-    return JSON.stringify(res);
+    return res.message.content;
   }
 
   // next preference: run / generate / create style APIs
@@ -71,7 +69,7 @@ async function runOllamaModelViaClient(model, prompt, timeoutMs = 600000) {
       if (res.output) return res.output.toString();
       if (res.choices && res.choices[0]) return res.choices[0].text || JSON.stringify(res.choices[0]);
     }
-    return JSON.stringify(res);
+    return null;
   }
 
   throw new Error('Unsupported ollama client interface');

@@ -105,8 +105,8 @@ function buildPromptForFullHtml(html, ragamVariants) {
   - Try to extract maximum scItems as possible, even if uncertain. Set the value of the 'confidence' field accordingly for those scItems.
   - If confidence is low or you are unsure or time is not sufficient, just list the scItem titles, composer/album if available, and confidence. NO scItem SHOULD BE MISSED AT ANY COST. Use the 'notes' field to explain ambiguity briefly if needed.
 
-  ADDITIONAL RULES FOR YOUTUBE PLAYLISTS:
-  - If the input HTML resembles a YouTube playlist page, extract all the title and YouTube video URL for each listed video.
+  ADDITIONAL RULES FOR PLAYLISTS:
+  - If the input HTML resembles a YouTube, Spotify or any other music platform's page or playlist, search the page for possible scItem titles and their corresponding audio or video links to them from the page itself.
   - If uploader/channel name is available on the page, place it in performer; otherwise leave performer null.
   - Do not follow external redirects or fetch external pages. Only use the provided HTML text.
 
@@ -121,7 +121,7 @@ function buildPromptForFullHtml(html, ragamVariants) {
       "source":"string or null (page title or URL if present)",
       "performer":"string or null",
       "context_snippet":"string or null (<=200 chars)",
-      "song_links":["array of YouTube watch URLs, may be empty"],
+      "song_links":["array of YouTube URLs, may be empty"],
       "confidence":number between 0.0 and 1.0,
       "notes":"short string or null (explain ambiguity briefly)"
     }
@@ -249,7 +249,7 @@ async function discoverURLs(ragam, numPages = 2) {
             let _ = new URL(u);
             //if url does not include any paths, ignore
             if (!_.pathname || _.pathname === '/') continue;
-            combined.add(u);
+            combined.add(_.href);
           } catch (e) { /* ignore invalid URLs */ }
         }
         console.info(`  < - ${engine} done for query`);
@@ -260,7 +260,28 @@ async function discoverURLs(ragam, numPages = 2) {
     await Promise.allSettled(enginePromises);
   }
 
-  return { variants: variants, results: combined};
+  return { variants: variants, results: Array.from(combined)};
+}
+
+function buildVerifierPrompt(html, ambiguous, variants) {
+  return `You are a Carnatic music expert and proofreader for HTML webpages. You are given a HTML webpage under the section titled 'INPUT_HTML'.
+  The webpage contains data about songs and/or compositions set in any of these Carnatic ragas: ${variants}.
+  
+  You are given a JSON array under the section titled INPUT_JSON. Your task is to verify whether the details in INPUT_JSON are factually and contextually correct or not with respect to the data in INPUT_HTML.
+   You will output back a JSON array similar to INPUT_JSON and of the same length, updating the "confidence" field and "notes" field for each element
+   based on your evaluation, supporting your confidence score with reasoning.
+   
+   CONFIDENCE GUIDANCE:
+    - 0.9-1.0 when the song/composition is explicitly described as "set in <raga>" or appears under a clear section heading.
+    - 0.7-0.9 when there is strong contextual evidence (composer + work type + matching playlist/video title).
+    - <0.5-0.7 when you are doubtful about the factual correctness of the particular song/composition, and is mostly a false positive.
+    - <0.5 when you are SURE that the item DOES NOT occur in the webpage HTML, or is a false positive.
+
+    INPUT_JSON: ${ambiguous}
+
+
+    INPUT_HTML: ${html}
+   `;
 }
 
 async function parseURLs(combined, variants) {
@@ -269,12 +290,12 @@ async function parseURLs(combined, variants) {
 
   const PRIMARY_CONF_THRESHOLD = 0.80;
   const VERIFIER_CONF_THRESHOLD = 0.65;
-  const MAX_ITEMS_PER_VERIFY = 12;
 
   const seenTitles = new Set();
 
-  const pageTasks = Array.from(combined).map((originalUrl) => (async () => {
+  let results = await Promise.allSettled(combined.map(async (originalUrl) => {
     await pageSem.acquire();
+    let finalResults = [];
     try {
       console.info('fetching', originalUrl);
       let resp = await fetchHtml(originalUrl)
@@ -282,8 +303,18 @@ async function parseURLs(combined, variants) {
           console.warn('fetch fail', e && e.message ? e.message : e);
           return null;
         });
-
-      if (!resp || !resp.html) return;
+      
+      const isBinary = /(\.pdf|\.docx?|\.pptx?|\.xls[xm]?|\.zip|\.rar)$/i.test(originalUrl) ||
+                (resp.headers && /application\/(pdf|msword|vnd|octet)/i.test(resp.headers['Content-Type']||''));
+      if (isBinary) {
+        console.info('  binary document, skipping:', originalUrl);
+        pageSem.release();
+        return [];
+      }
+      if (!resp || !resp.html) {
+        pageSem.release();
+        return [];
+      }
 
       let { html, finalUrl } = resp;
       let final = finalUrl || originalUrl;
@@ -299,19 +330,33 @@ async function parseURLs(combined, variants) {
               final = resolved.finalUrl || target;
             } else {
               console.warn('  could not resolve stub target, skipping:', target);
-              return;
+              pageSem.release();
+              return [];
+            }
+            const isBinary = /(\.pdf|\.docx?|\.pptx?|\.xls[xm]?|\.zip|\.rar)$/i.test(final) ||
+                 (resolved.headers && /application\/(pdf|msword|vnd|octet)/i.test(resolved.headers['Content-Type']||''));
+            if (isBinary) {
+              console.info('  binary document, skipping:', final);
+              pageSem.release();
+              return [];
             }
           } catch (e) {
             console.warn('  error following stub:', e && e.message ? e.message : e);
-            return;
+            pageSem.release();
+            return [];
           }
         } else {
           console.warn('  stub page with no extractable target, skipping:', originalUrl);
-          return;
+          pageSem.release();
+          return [];
         }
       }
 
-      if (typeof html !== 'string' || html.length < 200) return;
+      if (typeof html !== 'string' || html.length < 200) {
+        pageSem.release();
+        return [];
+      }
+
       console.info('-> prompting for URL ' + final);
       prompt = buildPromptForFullHtml(utils.cleanVisibleBody(html), variants);
       
@@ -320,16 +365,23 @@ async function parseURLs(combined, variants) {
         primaryOut = await runOllamaModel(configs.MODELS.primary, prompt);
       } catch (e) {
         console.warn('primary ollama call failed:', e && e.message ? e.message : e);
-        return;
+        pageSem.release();
+        return [];
       }
 
       const primaryParsed = extractJsonFromOutput(primaryOut);
-      if (!primaryParsed || !Array.isArray(primaryParsed)) return;
+      if (!primaryParsed || !Array.isArray(primaryParsed)) {
+        pageSem.release();
+        return [];
+      }
 
       const accepted = [];
       const ambiguous = [];
       for (const item of primaryParsed) {
-        if (!item || !item.title) continue;
+        if (!item || !item.title) {
+          console.warn('Invalid item in primary response:', item);
+          continue;
+        }
         const normTitle = String(item.title).trim().toLowerCase();
         if (seenTitles.has(normTitle)) continue;
         const conf = (typeof item.confidence === 'number') ? item.confidence : null;
@@ -352,135 +404,109 @@ async function parseURLs(combined, variants) {
       }
 
       for (const it of accepted) {
-        results.push({
+        finalResults.push({
           title: String(it.title).trim(),
           composer: it.composer || null,
           confidence: (typeof it.confidence === 'number' ? it.confidence : null),
           notes: it.notes || null,
-          youtube_link: (Array.isArray(it.song_links) && it.song_links.length) ? it.song_links[0] : null,
+          youtube_link: it.song_links || null,
           source_url: final
         });
       }
 
       if (ambiguous.length > 0) {
-        const chunks = [];
-        for (let i = 0; i < ambiguous.length; i += MAX_ITEMS_PER_VERIFY) chunks.push(ambiguous.slice(i, i + MAX_ITEMS_PER_VERIFY));
+        console.info(`  re-evaluating ${ambiguous.length} ambiguous item(s) for URL ` + final);
 
-        for (const chunk of chunks) {
-          const recheckPrompt = (() => {
-            const intro = `You are an expert verifier. The following candidate song/composition entries were extracted from a webpage and marked ambiguous. For each entry, re-evaluate whether it is set in one of: ${variants.join(', ')}. Provide the same JSON structure and supply an updated numeric confidence (0..1). If you can raise confidence, update fields; do NOT fabricate missing facts. Return ONLY a JSON array.`;
-            const candidates = chunk.map((c, idx) => {
-              return `ENTRY ${idx + 1}:\ntitle: ${c.title}\nidentified_ragam: ${c.ragam_identified || 'null'}\ncomposer: ${c.composer || 'null'}\ncontext_snippet: ${c.context_snippet || 'null'}\n`;
-            }).join('\n\n');
-            const body = utils.cleanVisibleBody(html).slice(0, 12000);
-            return `${intro}\n\n${candidates}\n\nPAGE_TEXT:\n${body}`;
-          })();
+        let verifierOut = null;
+        try {
+          let recheckPrompt = buildVerifierPrompt(html, ambiguous, variants);
+          verifierOut = await runOllamaModel(configs.MODELS.verifier, recheckPrompt);
+        } catch (e) {
+          console.warn('verifier call failed:', e && e.message ? e.message : e);
+        }
 
-          let verifierOut = null;
+        let verifierParsed = extractJsonFromOutput(verifierOut) || [];
+
+        const toEscalate = [];
+        for (let i = 0; i < verifierParsed.length; i++) {
+          const vp = verifierParsed[i] || null;
+          let finalItem = null;
+          if (vp && vp.title && typeof vp.confidence === 'number' && vp.confidence >= VERIFIER_CONF_THRESHOLD) {
+            finalItem = vp;
+          } else {
+            toEscalate.push(vp);
+          }
+          if (finalItem) {
+            const normTitle = String(finalItem.title).trim().toLowerCase();
+            if (!seenTitles.has(normTitle)) {
+              seenTitles.add(normTitle);
+              finalResults.push({
+                title: String(finalItem.title).trim(),
+                composer: finalItem.composer || null,
+                confidence: (typeof finalItem.confidence === 'number' ? finalItem.confidence : null),
+                notes: finalItem.notes || null,
+                youtube_link: (Array.isArray(finalItem.song_links) && finalItem.song_links.length) ? finalItem.song_links[0] : null,
+                source_url: final
+              });
+            }
+          }
+        }
+
+        if (toEscalate.length > 0) {
+          const escPrompt = buildVerifierPrompt(html, toEscalate, variants)
+
+          let fallbackParsed = null;
           try {
-            verifierOut = await runOllamaModel(configs.MODELS.verifier, recheckPrompt);
+            const out2 = await runOllamaModel(configs.MODELS.fallback, escPrompt, 900000);
+            const p2 = extractJsonFromOutput(out2) || [];
+            if (p2 && p2.length) fallbackParsed = p2;
           } catch (e) {
-            console.warn('verifier call failed:', e && e.message ? e.message : e);
+            console.warn('fallback call failed:', e && e.message ? e.message : e);
           }
 
-          let verifierParsed = extractJsonFromOutput(verifierOut) || [];
-
-          const toEscalate = [];
-          for (let i = 0; i < chunk.length; i++) {
-            const orig = chunk[i];
-            const vp = verifierParsed[i] || null;
-            let finalItem = null;
-            if (vp && vp.title && typeof vp.confidence === 'number' && vp.confidence >= VERIFIER_CONF_THRESHOLD) {
-              finalItem = vp;
-            } else {
-              toEscalate.push(orig);
+          if (fallbackParsed && fallbackParsed.length) {
+            for (const fitem of fallbackParsed) {
+              if (!fitem || !fitem.title) continue;
+              const normTitle = String(fitem.title).trim().toLowerCase();
+              if (seenTitles.has(normTitle)) continue;
+              seenTitles.add(normTitle);
+              finalResults.push({
+                title: String(fitem.title).trim(),
+                composer: fitem.composer || null,
+                confidence: (typeof fitem.confidence === 'number' ? fitem.confidence : null),
+                notes: fitem.notes || null,
+                youtube_link: (Array.isArray(fitem.song_links) && fitem.song_links.length) ? fitem.song_links[0] : null,
+                source_url: final
+              });
             }
-            if (finalItem) {
-              const normTitle = String(finalItem.title).trim().toLowerCase();
-              if (!seenTitles.has(normTitle)) {
-                seenTitles.add(normTitle);
-                results.push({
-                  title: String(finalItem.title).trim(),
-                  composer: finalItem.composer || null,
-                  confidence: (typeof finalItem.confidence === 'number' ? finalItem.confidence : null),
-                  notes: finalItem.notes || null,
-                  youtube_link: (Array.isArray(finalItem.song_links) && finalItem.song_links.length) ? finalItem.song_links[0] : null,
-                  source_url: final
-                });
-              }
-            }
-          }
-
-          if (toEscalate.length > 0) {
-            const escPrompt = (() => {
-              const intro = `You are a high-recall music-domain extractor. Re-evaluate these candidate song/composition entries with the full page context. Output the same JSON objects with confidence numbers. Only return a JSON array.`;
-              const candidates = toEscalate.map((c, idx) => `ENTRY ${idx + 1}:\ntitle: ${c.title}\ncontext_snippet: ${c.context_snippet || 'null'}\ncomposer: ${c.composer || 'null'}`).join('\n\n');
-              const body = utils.cleanVisibleBody(html).slice(0, 20000);
-              return `${intro}\n\n${candidates}\n\nPAGE_TEXT:\n${body}`;
-            })();
-
-            let fallbackParsed = null;
-            try {
-              const out1 = await runOllamaModel(configs.MODELS.fallback1, escPrompt, 900000);
-              fallbackParsed = extractJsonFromOutput(out1) || [];
-            } catch (e) {
-              console.warn('fallback1 call failed:', e && e.message ? e.message : e);
-            }
-
-            if ((!fallbackParsed || fallbackParsed.length === 0 || fallbackParsed.every(x => !x || typeof x.confidence !== 'number' || x.confidence < VERIFIER_CONF_THRESHOLD))) {
-              try {
-                const out2 = await runOllamaModel(configs.MODELS.fallback2, escPrompt, 900000);
-                const p2 = extractJsonFromOutput(out2) || [];
-                if (p2 && p2.length) fallbackParsed = p2;
-              } catch (e) {
-                console.warn('fallback2 call failed:', e && e.message ? e.message : e);
-              }
-            }
-
-            if (fallbackParsed && fallbackParsed.length) {
-              for (const fitem of fallbackParsed) {
-                if (!fitem || !fitem.title) continue;
-                const normTitle = String(fitem.title).trim().toLowerCase();
-                if (seenTitles.has(normTitle)) continue;
-                seenTitles.add(normTitle);
-                results.push({
-                  title: String(fitem.title).trim(),
-                  composer: fitem.composer || null,
-                  confidence: (typeof fitem.confidence === 'number' ? fitem.confidence : null),
-                  notes: fitem.notes || null,
-                  youtube_link: (Array.isArray(fitem.song_links) && fitem.song_links.length) ? fitem.song_links[0] : null,
-                  source_url: final
-                });
-              }
-            } else {
-              for (const o of toEscalate) {
-                const normTitle = String(o.title).trim().toLowerCase();
-                if (seenTitles.has(normTitle)) continue;
-                seenTitles.add(normTitle);
-                results.push({
-                  title: String(o.title).trim(),
-                  composer: o.composer || null,
-                  confidence: o.confidence || 0.35,
-                  notes: 'Left ambiguous after verifier/fallbacks',
-                  youtube_link: (Array.isArray(o.song_links) && o.song_links.length) ? o.song_links[0] : null,
-                  source_url: final
-                });
-              }
+          } else {
+            for (const o of toEscalate) {
+              const normTitle = String(o.title).trim().toLowerCase();
+              if (seenTitles.has(normTitle)) continue;
+              seenTitles.add(normTitle);
+              finalResults.push({
+                title: String(o.title).trim(),
+                composer: o.composer || null,
+                confidence: o.confidence || 0.35,
+                notes: 'Left ambiguous after verifier/fallbacks',
+                youtube_link: (Array.isArray(o.song_links) && o.song_links.length) ? o.song_links[0] : null,
+                source_url: final
+              });
             }
           }
         }
       }
-
     } catch (e) {
       console.warn('processing fail for', originalUrl, e && e.message ? e.message : e);
     } finally {
       pageSem.release();
     }
-  })());
+    return finalResults;
+  }));
 
-  await Promise.allSettled(pageTasks);
-
-  return results;
+  return results
+    .filter(r => r && r.status === 'fulfilled' && Array.isArray(r.value) && r.value.length > 0)
+    .flatMap(r => r.value);
 }
 
 module.exports = { discoverURLs, parseURLs };

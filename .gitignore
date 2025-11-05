@@ -3,3 +3,4 @@ scraper.db
 .env
 results.json
 output.json
+.vscode/launch.json

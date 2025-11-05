@@ -90,9 +90,8 @@ export const ENGINE_CONFIGS = {
 // models in staged pipeline order (names you must have available in Ollama Cloud/local)
 export const MODELS = {
   primary: process.env.OLLAMA_PRIMARY_MODEL || 'gpt-oss:120b-cloud',           // fast extractor
-  verifier: process.env.OLLAMA_VERIFIER_MODEL || 'gpt-oss:120b-cloud',        // disambiguator
-  fallback1: process.env.OLLAMA_FALLBACK1_MODEL || 'qwen3-coder:480b-cloud', // heavy fallback
-  fallback2: process.env.OLLAMA_FALLBACK2_MODEL || 'deepseek-v3:671b-cloud'  // largest fallback
+  verifier: process.env.OLLAMA_VERIFIER_MODEL || 'qwen3-coder:480b-cloud',        // disambiguator
+  fallback: process.env.OLLAMA_FALLBACK2_MODEL || 'deepseek-v3:671b-cloud'  // fallback
 };
 
 // ----------------- Variant generation (unchanged) -----------------

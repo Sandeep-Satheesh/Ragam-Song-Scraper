@@ -27,8 +27,10 @@ const opts = program.opts();
 
   console.info(`Searching ragam="${ragam}" pagesPerEngine=${maxPages}`);
 
-  const discoverResults = await discoverURLs(ragam, maxPages);
-  console.info(`Discovered ${urlSet.size} raw items from scraping.`);
+  const discoverResults = { variants: [ragam], results: await db.allAsync('SELECT url FROM pages') };
+  discoverResults.results = discoverResults.results.map(urlObj => urlObj.url);
+  //const discoverResults = await discoverURLs([ragam], maxPages);
+  console.info(`Discovered ${discoverResults.results.length} raw items from scraping.`);
 
   await Promise.all(Array.from(discoverResults.results).map(async (url) => {
     await db.run(`INSERT OR IGNORE INTO pages(url) VALUES (?)`, [url]);
