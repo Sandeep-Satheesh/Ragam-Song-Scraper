@@ -8,7 +8,7 @@ const exporter = require('./exporter');
 const utils = require('./utils');
 program
   .requiredOption('--ragam <name>', 'Rāgam name to search')
-  .option('--max-pages <n>', 'pages per engine', String, '2')
+  .option('--max-pages <n>', 'pages per engine', String, '5')
   .parse(process.argv);
 
 const opts = program.opts();
@@ -23,13 +23,11 @@ const opts = program.opts();
   const get = db.getAsync.bind(db);
   const all = db.allAsync.bind(db);
 
-  // ensure songs table exists (dedupe by title + source_url)
-
   console.info(`Searching ragam="${ragam}" pagesPerEngine=${maxPages}`);
 
-  const discoverResults = { variants: [ragam], results: await db.allAsync('SELECT url FROM pages') };
-  discoverResults.results = discoverResults.results.map(urlObj => urlObj.url);
-  //const discoverResults = await discoverURLs([ragam], maxPages);
+  //const discoverResults = { variants: [ragam], results: await db.allAsync('SELECT url FROM pages') };
+  //discoverResults.results = discoverResults.results.map(urlObj => urlObj.url);
+  const discoverResults = await discoverURLs([ragam], maxPages);
   console.info(`Discovered ${discoverResults.results.length} raw items from scraping.`);
 
   await Promise.all(Array.from(discoverResults.results).map(async (url) => {
@@ -38,7 +36,13 @@ const opts = program.opts();
 
   const results = await parseURLs(discoverResults.results, discoverResults.variants);
 
-  let inserted = 0, skipped = 0;
+  let initDbCount = 0, newDbCount = 0;
+  
+  let exists = await get(`SELECT count(id) AS count FROM songs_raw`);
+  if (exists && exists.count) {
+    initDbCount = exists.count;
+  }
+
   for (const item of results) {
     try {
       const title = (item.title || '').trim();
@@ -46,25 +50,33 @@ const opts = program.opts();
       const title_norm = utils.stripDiacriticsAndNoise(title);
       const composer = item.composer;
       const notes = item.notes;
-      const youtube_link = item.youtube_link;
       const source_url = item.source_url || 'N/A';
 
       // insert or ignore duplicate (unique constraint)
       await run(
-        `INSERT OR IGNORE INTO songs (title, composer, notes, youtube_link, source_url, ragam)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [title_norm, composer, notes, youtube_link, source_url, ragam]
+        `INSERT OR IGNORE INTO songs_raw (title, composer, notes, source_url, ragam)
+         VALUES (?, ?, ?, ?, ?)`,
+        [title_norm, composer, notes, source_url, ragam]
       );
 
-      // count inserted/confirmed
-      const exists = await get(`SELECT 1 FROM songs WHERE title = ? AND source_url = ? LIMIT 1`, [title_norm, source_url]);
-      if (exists) inserted++; else skipped++;
+      for (const song_link of item.song_links || []) {
+        await run(
+          `INSERT OR IGNORE INTO song_links (title, source_url, song_link) VALUES (?, ?, ?)`,
+          [title_norm, source_url, song_link]
+        );
+      }
+
     } catch (e) {
       console.warn('error processing item', e && e.message ? e.message : e);
     }
   }
 
-  console.log(`Inserted/confirmed ${inserted} songs, skipped ${skipped}.`);
+  exists = await get(`SELECT count(id) AS count FROM songs_raw`);
+  if (exists && exists.count) {
+    newDbCount = exists.count;
+  }
+
+  console.log(`Inserted ${newDbCount - initDbCount} new song record(s).`);
 
   // export to JSON via exporter module
   try {

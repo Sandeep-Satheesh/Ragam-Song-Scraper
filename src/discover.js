@@ -121,7 +121,7 @@ function buildPromptForFullHtml(html, ragamVariants) {
       "source":"string or null (page title or URL if present)",
       "performer":"string or null",
       "context_snippet":"string or null (<=200 chars)",
-      "song_links":["array of YouTube URLs, may be empty"],
+      "song_links":["array of YouTube or music platform URLs pointing to a rendition of the scItem, if any"],
       "confidence":number between 0.0 and 1.0,
       "notes":"short string or null (explain ambiguity briefly)"
     }
@@ -409,7 +409,7 @@ async function parseURLs(combined, variants) {
           composer: it.composer || null,
           confidence: (typeof it.confidence === 'number' ? it.confidence : null),
           notes: it.notes || null,
-          youtube_link: it.song_links || null,
+          song_links: it.song_links || null,
           source_url: final
         });
       }
@@ -445,7 +445,7 @@ async function parseURLs(combined, variants) {
                 composer: finalItem.composer || null,
                 confidence: (typeof finalItem.confidence === 'number' ? finalItem.confidence : null),
                 notes: finalItem.notes || null,
-                youtube_link: (Array.isArray(finalItem.song_links) && finalItem.song_links.length) ? finalItem.song_links[0] : null,
+                song_links: finalItem.song_links,
                 source_url: final
               });
             }
@@ -475,7 +475,7 @@ async function parseURLs(combined, variants) {
                 composer: fitem.composer || null,
                 confidence: (typeof fitem.confidence === 'number' ? fitem.confidence : null),
                 notes: fitem.notes || null,
-                youtube_link: (Array.isArray(fitem.song_links) && fitem.song_links.length) ? fitem.song_links[0] : null,
+                song_links: fitem.song_links,
                 source_url: final
               });
             }
@@ -489,7 +489,7 @@ async function parseURLs(combined, variants) {
                 composer: o.composer || null,
                 confidence: o.confidence || 0.35,
                 notes: 'Left ambiguous after verifier/fallbacks',
-                youtube_link: (Array.isArray(o.song_links) && o.song_links.length) ? o.song_links[0] : null,
+                song_links: o.song_links,
                 source_url: final
               });
             }
