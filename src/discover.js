@@ -1,14 +1,15 @@
 // src/discover.js
 // Refactored to use ollama-handler for all Ollama interactions.
-// Behavior and pipeline remain same as original.
+// Behavior and pipeline remain same as original except ambiguous verification removed.
 
 const se_scraper = require('se-scraper');
 const { fetchHtml } = require('./fetcher');
 const utils = require('./utils');
 const configs = require('./configs');
 const { URL } = require('url');
+const fs = require('fs');
 
-const { runOllamaModel, extractJsonFromOutput } = require('./ollama-handler');
+const { runOllamaModel } = require('./ollama-handler');
 
 class Semaphore { constructor(max) { this.max = max; this.current = 0; this.queue = []; } async acquire() { if (this.current < this.max) { this.current++; return; } await new Promise(res => this.queue.push(res)); this.current++; } release() { this.current = Math.max(0, this.current - 1); if (this.queue.length) { const n = this.queue.shift(); n(); } } }
 
@@ -91,55 +92,22 @@ async function runScrapeWithOpts(scrape_job, opts) {
   return await se_scraper.scrape(opts, scrape_job);
 }
 
-
 // ----------------- Prompt builder (updated to request confidences + explicit reasoning) -----------------
-function buildPromptForFullHtml(html, ragamVariants) {
-  return `
-  You are an expert in Carnatic music and structured text extraction.
-  TASK: From the section titled 'INPUT_DATA' below, extract ALL available details on ALL the songs or compositions (hereinafter known as scItems) set in any of these Carnatic or Hindustani ragas: ${ragamVariants.join(',')}.
+function buildPromptForFullHtml(html, ragamVariants) {  
+  const templatePath = 'prompts/html-scraper/system.txt';
+  const templateString = fs.readFileSync(templatePath, 'utf8');
 
-  GENERAL RULES FOR PARSING INPUT_DATA:
-  - The scItem may appear in paragraphs, bullet lists, table rows, or under headings that imply the raga, even if not repeated.
-  - Preserve spellings exactly as found.
-  - Do NOT invent composers/performers/links. If missing, use null.
-  - Try to extract maximum scItems as possible, even if uncertain. Set the value of the 'confidence' field accordingly for those scItems.
-  - If confidence is low or you are unsure or time is not sufficient, just list the scItem titles, composer/album if available, and confidence. NO scItem SHOULD BE MISSED AT ANY COST. Use the 'notes' field to explain ambiguity briefly if needed.
+  let formattedString = templateString;
+  formattedString = formattedString.replaceAll(new RegExp(`\\$\\{ragamVariants\\}`, 'g'), ragamVariants);
 
-  ADDITIONAL RULES FOR PLAYLISTS:
-  - If the input HTML resembles a YouTube, Spotify or any other music platform's page or playlist, search the page for possible scItem titles and their corresponding audio or video links to them from the page itself.
-  - If uploader/channel name is available on the page, place it in performer; otherwise leave performer null.
-  - Do not follow external redirects or fetch external pages. Only use the provided HTML text.
+  return {
+    system: formattedString,
+    user: `TASK: Extract all scItems defined above from the HTML below.
 
-  OUTPUT FORMAT:
-  -  Return EXACTLY one JSON array. Each element must be an object with these fields:
-    {
-      "title":"string (mandatory)",
-      "ragam_canonical":"${ragamVariants[0]}",
-      "ragam_identified":"string (variant exactly as in text) or null",
-      "composer":"string or null",
-      "lyricist":"string or null",
-      "source":"string or null (page title or URL if present)",
-      "performer":"string or null",
-      "context_snippet":"string or null (<=200 chars)",
-      "song_links":["array of YouTube or music platform URLs pointing to a rendition of the scItem, if any"],
-      "confidence":number between 0.0 and 1.0,
-      "notes":"short string or null (explain ambiguity briefly)"
-    }
-
-  CONFIDENCE GUIDANCE:
-  - 0.9-1.0 when scItem is explicitly described as "set in <raga>" or appears under a clear section heading.
-  - 0.7-0.9 when there is strong contextual evidence (composer + work type + matching playlist/video title).
-  - 0.4-0.7 when inference is needed (list item under a heading, or ambiguous formatting).
-  - <0.4 when guessing.
-
-  RULES:
-  - Always include numeric 'confidence'.
-  - If unsure about a title mapping, include it with low confidence and a short 'notes' reason.
-  - Preserve Unicode and punctuation.
-  - Return NOTHING else besides the JSON array.
-
-  INPUT_DATA:
-  ${html}`.trim();
+### START_INPUT_DATA
+${html}
+### END_INPUT_DATA`
+  }
 }
 
 // ----------------- stub detection/extraction helpers (unchanged) -----------------
@@ -263,39 +231,20 @@ async function discoverURLs(ragam, numPages = 2) {
   return { variants: variants, results: Array.from(combined)};
 }
 
-function buildVerifierPrompt(html, ambiguous, variants) {
-  return `You are a Carnatic music expert and proofreader for HTML webpages. You are given a HTML webpage under the section titled 'INPUT_HTML'.
-  The webpage contains data about songs and/or compositions set in any of these Carnatic ragas: ${variants}.
-  
-  You are given a JSON array under the section titled INPUT_JSON. Your task is to verify whether the details in INPUT_JSON are factually and contextually correct or not with respect to the data in INPUT_HTML.
-   You will output back a JSON array similar to INPUT_JSON and of the same length, updating the "confidence" field and "notes" field for each element
-   based on your evaluation, supporting your confidence score with reasoning.
-   
-   CONFIDENCE GUIDANCE:
-    - 0.9-1.0 when the song/composition is explicitly described as "set in <raga>" or appears under a clear section heading.
-    - 0.7-0.9 when there is strong contextual evidence (composer + work type + matching playlist/video title).
-    - <0.5-0.7 when you are doubtful about the factual correctness of the particular song/composition, and is mostly a false positive.
-    - <0.5 when you are SURE that the item DOES NOT occur in the webpage HTML, or is a false positive.
-
-    INPUT_JSON: ${ambiguous}
-
-
-    INPUT_HTML: ${html}
-   `;
-}
-
 async function parseURLs(combined, variants) {
-  const pageConcurrency = 2;
+  const pageConcurrency = 1;
   const pageSem = new Semaphore(pageConcurrency);
 
   const PRIMARY_CONF_THRESHOLD = 0.80;
-  const VERIFIER_CONF_THRESHOLD = 0.65;
 
   const seenTitles = new Set();
+  const seenAmbiguous = new Set();
 
-  let results = await Promise.allSettled(combined.map(async (originalUrl) => {
+  const acceptedAll = [];
+  const ambiguousAll = [];
+
+  await Promise.allSettled(combined.map(async (originalUrl) => {
     await pageSem.acquire();
-    let finalResults = [];
     try {
       console.info('fetching', originalUrl);
       let resp = await fetchHtml(originalUrl)
@@ -305,7 +254,7 @@ async function parseURLs(combined, variants) {
         });
       
       const isBinary = /(\.pdf|\.docx?|\.pptx?|\.xls[xm]?|\.zip|\.rar)$/i.test(originalUrl) ||
-                (resp.headers && /application\/(pdf|msword|vnd|octet)/i.test(resp.headers['Content-Type']||''));
+                (resp && resp.headers && /application\/(pdf|msword|vnd|octet)/i.test(resp.headers['Content-Type']||''));
       if (isBinary) {
         console.info('  binary document, skipping:', originalUrl);
         pageSem.release();
@@ -333,9 +282,9 @@ async function parseURLs(combined, variants) {
               pageSem.release();
               return [];
             }
-            const isBinary = /(\.pdf|\.docx?|\.pptx?|\.xls[xm]?|\.zip|\.rar)$/i.test(final) ||
+            const isBinary2 = /(\.pdf|\.docx?|\.pptx?|\.xls[xm]?|\.zip|\.rar)$/i.test(final) ||
                  (resolved.headers && /application\/(pdf|msword|vnd|octet)/i.test(resolved.headers['Content-Type']||''));
-            if (isBinary) {
+            if (isBinary2) {
               console.info('  binary document, skipping:', final);
               pageSem.release();
               return [];
@@ -358,155 +307,70 @@ async function parseURLs(combined, variants) {
       }
 
       console.info('-> prompting for URL ' + final);
-      prompt = buildPromptForFullHtml(utils.cleanVisibleBody(html), variants);
+      const prompt = buildPromptForFullHtml(utils.cleanVisibleBody(html), variants);
       
       let primaryOut;
       try {
-        primaryOut = await runOllamaModel(configs.MODELS.primary, prompt);
+        primaryOut = await runOllamaModel(prompt);
       } catch (e) {
         console.warn('primary ollama call failed:', e && e.message ? e.message : e);
         pageSem.release();
         return [];
       }
 
-      const primaryParsed = extractJsonFromOutput(primaryOut);
+      const primaryParsed = utils.extractJsonFromOutput(primaryOut && primaryOut.content ? primaryOut.content : primaryOut) ;
       if (!primaryParsed || !Array.isArray(primaryParsed)) {
         pageSem.release();
         return [];
       }
 
-      const accepted = [];
-      const ambiguous = [];
       for (const item of primaryParsed) {
         if (!item || !item.title) {
           console.warn('Invalid item in primary response:', item);
           continue;
         }
         const normTitle = String(item.title).trim().toLowerCase();
-        if (seenTitles.has(normTitle)) continue;
         const conf = (typeof item.confidence === 'number') ? item.confidence : null;
+
         if (conf !== null && conf >= PRIMARY_CONF_THRESHOLD) {
-          accepted.push(item);
-          seenTitles.add(normTitle);
+          if (!seenTitles.has(normTitle)) {
+            seenTitles.add(normTitle);
+            acceptedAll.push({
+              title: String(item.title).trim(),
+              composer: item.composer || null,
+              confidence: conf,
+              notes: item.notes || null,
+              song_links: item.song_links || null,
+              source_url: final
+            });
+          }
         } else {
-          if (conf === null) {
-            if (!isAmbiguousItem(item)) {
-              item.confidence = 0.75;
-              accepted.push(item);
-              seenTitles.add(normTitle);
-            } else {
-              ambiguous.push(item);
-            }
-          } else {
-            ambiguous.push(item);
+          // treat as ambiguous (including null confidence that fails isAmbiguousItem)
+          if (!seenTitles.has(normTitle) && !seenAmbiguous.has(normTitle)) {
+            seenAmbiguous.add(normTitle);
+            ambiguousAll.push({
+              title: String(item.title).trim(),
+              composer: item.composer || null,
+              confidence: (typeof item.confidence === 'number' ? item.confidence : null),
+              notes: item.notes || null,
+              song_links: item.song_links || null,
+              source_url: final
+            });
           }
         }
       }
 
-      for (const it of accepted) {
-        finalResults.push({
-          title: String(it.title).trim(),
-          composer: it.composer || null,
-          confidence: (typeof it.confidence === 'number' ? it.confidence : null),
-          notes: it.notes || null,
-          song_links: it.song_links || null,
-          source_url: final
-        });
-      }
-
-      if (ambiguous.length > 0) {
-        console.info(`  re-evaluating ${ambiguous.length} ambiguous item(s) for URL ` + final);
-
-        let verifierOut = null;
-        try {
-          let recheckPrompt = buildVerifierPrompt(html, ambiguous, variants);
-          verifierOut = await runOllamaModel(configs.MODELS.verifier, recheckPrompt);
-        } catch (e) {
-          console.warn('verifier call failed:', e && e.message ? e.message : e);
-        }
-
-        let verifierParsed = extractJsonFromOutput(verifierOut) || [];
-
-        const toEscalate = [];
-        for (let i = 0; i < verifierParsed.length; i++) {
-          const vp = verifierParsed[i] || null;
-          let finalItem = null;
-          if (vp && vp.title && typeof vp.confidence === 'number' && vp.confidence >= VERIFIER_CONF_THRESHOLD) {
-            finalItem = vp;
-          } else {
-            toEscalate.push(vp);
-          }
-          if (finalItem) {
-            const normTitle = String(finalItem.title).trim().toLowerCase();
-            if (!seenTitles.has(normTitle)) {
-              seenTitles.add(normTitle);
-              finalResults.push({
-                title: String(finalItem.title).trim(),
-                composer: finalItem.composer || null,
-                confidence: (typeof finalItem.confidence === 'number' ? finalItem.confidence : null),
-                notes: finalItem.notes || null,
-                song_links: finalItem.song_links,
-                source_url: final
-              });
-            }
-          }
-        }
-
-        if (toEscalate.length > 0) {
-          const escPrompt = buildVerifierPrompt(html, toEscalate, variants)
-
-          let fallbackParsed = null;
-          try {
-            const out2 = await runOllamaModel(configs.MODELS.fallback, escPrompt, 900000);
-            const p2 = extractJsonFromOutput(out2) || [];
-            if (p2 && p2.length) fallbackParsed = p2;
-          } catch (e) {
-            console.warn('fallback call failed:', e && e.message ? e.message : e);
-          }
-
-          if (fallbackParsed && fallbackParsed.length) {
-            for (const fitem of fallbackParsed) {
-              if (!fitem || !fitem.title) continue;
-              const normTitle = String(fitem.title).trim().toLowerCase();
-              if (seenTitles.has(normTitle)) continue;
-              seenTitles.add(normTitle);
-              finalResults.push({
-                title: String(fitem.title).trim(),
-                composer: fitem.composer || null,
-                confidence: (typeof fitem.confidence === 'number' ? fitem.confidence : null),
-                notes: fitem.notes || null,
-                song_links: fitem.song_links,
-                source_url: final
-              });
-            }
-          } else {
-            for (const o of toEscalate) {
-              const normTitle = String(o.title).trim().toLowerCase();
-              if (seenTitles.has(normTitle)) continue;
-              seenTitles.add(normTitle);
-              finalResults.push({
-                title: String(o.title).trim(),
-                composer: o.composer || null,
-                confidence: o.confidence || 0.35,
-                notes: 'Left ambiguous after verifier/fallbacks',
-                song_links: o.song_links,
-                source_url: final
-              });
-            }
-          }
-        }
-      }
     } catch (e) {
       console.warn('processing fail for', originalUrl, e && e.message ? e.message : e);
     } finally {
+      await utils.politeSleep();
       pageSem.release();
     }
-    return finalResults;
+    return [];
   }));
 
-  return results
-    .filter(r => r && r.status === 'fulfilled' && Array.isArray(r.value) && r.value.length > 0)
-    .flatMap(r => r.value);
+  // Return collected accepted and ambiguous arrays
+  return { accepted: acceptedAll, ambiguous: ambiguousAll };
 }
 
 module.exports = { discoverURLs, parseURLs };
