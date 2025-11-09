@@ -206,4 +206,72 @@ async function politeSleep() {
   return new Promise(resolve => setTimeout(resolve, delay));
 }
 
-module.exports = { cleanRedirectUrl, looksLikeRedirectStub, stripDiacritics, cleanVisibleBody, stripDiacriticsAndNoise, extractJsonFromOutput, politeSleep };
+function genVariants(name) { return Array.of(name); }
+
+function walkForUrls(obj, set) {
+  if (!obj) return;
+  if (typeof obj === 'string' && obj.startsWith('http')) { set.add(obj); return; }
+  if (Array.isArray(obj)) return obj.forEach(o => walkForUrls(o, set));
+  if (typeof obj === 'object') for (const k of Object.keys(obj)) walkForUrls(obj[k], set);
+}
+
+function tryBase64DecodeCandidate(s) {
+  try {
+    let t = decodeURIComponent(s);
+    if (/^https?:\/\//i.test(t)) return t;
+    let b = s.replace(/-/g, '+').replace(/_/g, '/').replace(/\s+/g, '');
+    while (b.length % 4) b += '=';
+    try { const dec = Buffer.from(b, 'base64').toString('utf8'); if (/^https?:\/\//i.test(dec)) return dec; } catch (e) {}
+    try { const dec2 = Buffer.from(b, 'base64').toString('utf8'); const dec3 = decodeURIComponent(dec2); if (/^https?:\/\//i.test(dec3)) return dec3; } catch (e) {}
+    if (/^https?:\/\//i.test(t)) return t;
+  } catch (e) {}
+  return null;
+}
+
+function extractStubTarget(html) {
+  if (!html || typeof html !== 'string') return null;
+  const meta = html.match(/<meta[^>]*http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"'>]+)["']/i);
+  if (meta) {
+    try { return decodeURIComponent(meta[1].trim()); } catch (e) { return meta[1].trim(); }
+  }
+  const clickAnchor = html.match(/<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:click here|click here to continue|click here if the page|continue|here)\b/i);
+  if (clickAnchor) {
+    let u = clickAnchor[1];
+    if (!/[?&](?:u|url|RU)=/i.test(u)) {
+      try { return decodeURIComponent(u); } catch (e) { return u; }
+    }
+  }
+  const paramMatch = html.match(/[?&](?:u|url|RU)=([^&"'>\s]+)/i);
+  if (paramMatch) {
+    const raw = paramMatch[1];
+    try { const decoded = decodeURIComponent(raw); if (/^https?:\/\//i.test(decoded)) return decoded; } catch (e) {}
+    const b64 = tryBase64DecodeCandidate(raw);
+    if (b64) return b64;
+    const cleaned = raw.replace(/^a\d+/i, '').replace(/^[^A-Za-z0-9\-_]+/, '');
+    const b64b = tryBase64DecodeCandidate(cleaned);
+    if (b64b) return b64b;
+    try { return decodeURIComponent(raw); } catch (e) { return raw; }
+  }
+  const hrefMatch = html.match(/<a[^>]*href=["'](https?:\/\/[^"']{20,})["'][^>]*>/i);
+  if (hrefMatch) return hrefMatch[1];
+  return null;
+}
+
+function looksLikeRedirectStubHtml(html) {
+  if (!html || typeof html !== 'string') return false;
+  const head = html.slice(0, 16000).toLowerCase();
+  if (/onload\s*=\s*["']\s*l\s*\(|settimeout\(\s*f\s*,\s*\d+\s*\)/i.test(head)) return true;
+  if (/click here if the page does not redirect automatically|you are being redirected|if the page does not redirect/i.test(head)) return true;
+  if (/window\.location\.href\.match\(|px=([^&]*)/i.test(head)) return true;
+  if (/bing\.com\/ck\/a/i.test(head)) return true;
+  if (/<meta[^>]*http-equiv=["']refresh["']/i.test(head)) return true;
+  return false;
+}
+
+module.exports = { cleanRedirectUrl, looksLikeRedirectStub, stripDiacritics, cleanVisibleBody, stripDiacriticsAndNoise, extractJsonFromOutput, politeSleep,
+  genVariants,
+  looksLikeRedirectStub,
+  extractStubTarget,
+  walkForUrls,
+  tryBase64DecodeCandidate
+ };

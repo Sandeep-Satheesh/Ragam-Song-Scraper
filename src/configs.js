@@ -86,15 +86,4 @@ export const ENGINE_CONFIGS = {
   },
 };
 
-
-// models in staged pipeline order (names you must have available in Ollama Cloud/local)
-export const MODELS = {
-  primary: process.env.OLLAMA_PRIMARY_MODEL || 'gpt-oss:120b-cloud',           // fast extractor
-  verifier: process.env.OLLAMA_VERIFIER_MODEL || 'qwen3-coder:480b-cloud',        // disambiguator
-  fallback: process.env.OLLAMA_FALLBACK2_MODEL || 'deepseek-v3:671b-cloud'  // fallback
-};
-
-// ----------------- Variant generation (unchanged) -----------------
-export const VOWELS = ['a', 'e', 'i', 'o', 'u'];
-
 export const RENDER_WAIT_SELECTOR = 'networkidle'

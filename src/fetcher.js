@@ -176,7 +176,7 @@ async function renderWithBrowser(url, timeout = DEFAULT_TIMEOUT, waitForSelector
   });
 
   try {
-    mainResponse = await page.goto(url, { waitUntil: 'networkidle', timeout });
+    mainResponse = await page.goto(url, { waitUntil: configs.RENDER_WAIT_SELECTOR, timeout });
     await page.waitForTimeout(750);
     await autoScroll(page);
 

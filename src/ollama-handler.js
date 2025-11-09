@@ -226,12 +226,12 @@ async function runOllamaModel(prompt, timeoutMs = 600000) {
 
   try {
     if (ollamaClient) {
-      return await runOllamaModelViaClient(pickedModel, prompt, responseTokens, timeoutMs);
+      return { ...await runOllamaModelViaClient(pickedModel, prompt, responseTokens, timeoutMs), model_name: pickedModel };
     }
   } catch (e) {
     console.warn('ollama-js client call failed, falling back to CLI:', e && e.message ? e.message : e);
   }
-  return await runOllamaModelViaCli(pickedModel, prompt, responseTokens, timeoutMs);
+  return { ...await runOllamaModelViaClient(pickedModel, prompt, responseTokens, timeoutMs), model_name: pickedModel };
 }
 
 module.exports = {

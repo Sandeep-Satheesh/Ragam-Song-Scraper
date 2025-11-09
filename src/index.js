@@ -54,7 +54,7 @@ const opts = program.opts();
 
       // insert or ignore duplicate (unique constraint)
       await run(
-        `INSERT OR IGNORE INTO songs_raw (title, composer, notes, source_url, ragam)
+        `INSERT OR IGNORE INTO songs_raw (title, composer, confidence, notes, source_url, ragam)
          VALUES (?, ?, ?, ?, ?)`,
         [title_norm, composer, notes, source_url, ragam]
       );
