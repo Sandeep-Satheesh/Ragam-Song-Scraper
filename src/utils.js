@@ -13,16 +13,6 @@ function cleanRedirectUrl(url) {
   return url;
 }
 
-function looksLikeRedirectStub(html) {
-  if (!html) return false;
-  const s = html.slice(0, 6000).toLowerCase();
-  return /click here if the page does not redirect automatically|you are being redirected|meta http-equiv=["']refresh["']/.test(s);
-}
-
-function stripDiacritics(text) {
-  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // remove combining marks
-}
-
 function removeEmptyTopDownByContent($root, $) {
   // returns true only if node has meaningful content or meaningful descendants
   function hasMeaningful($el) {
@@ -190,11 +180,20 @@ function extractJsonFromOutput(text) {
   const startObj = text.indexOf('{');
   const s = (startArr === -1 || (startObj !== -1 && startObj < startArr)) ? startObj : startArr;
   if (s === -1) return null;
-  const candidate = text.slice(s);
+  let candidate = text.slice(s);
   try { return JSON.parse(candidate); }
   catch {
-    const last = Math.max(candidate.lastIndexOf(']'), candidate.lastIndexOf('}'));
-    if (last !== -1) {
+    let last = candidate.lastIndexOf(']');
+    if (last === -1) {
+      last = candidate.lastIndexOf('}');
+      if (last === -1) throw new Error('JSON Parsing error: text is not valid JSON!');
+      else {
+        console.warn('Malformed JSON, trying to recover as much as we can...');
+        candidate = candidate.slice(0, last + 1) + ']';
+        return extractJsonFromOutput(candidate);
+      }
+    }
+    else {
       try { return JSON.parse(candidate.slice(0, last + 1)); } catch { }
     }
     return null;
@@ -268,10 +267,17 @@ function looksLikeRedirectStubHtml(html) {
   return false;
 }
 
-module.exports = { cleanRedirectUrl, looksLikeRedirectStub, stripDiacritics, cleanVisibleBody, stripDiacriticsAndNoise, extractJsonFromOutput, politeSleep,
+class Semaphore {
+  constructor(max) { this.max = max; this.current = 0; this.queue = []; }
+  async acquire() { if (this.current < this.max) { this.current++; return; } await new Promise(res => this.queue.push(res)); this.current++; }
+  release() { this.current = Math.max(0, this.current - 1); if (this.queue.length) { const n = this.queue.shift(); n(); } }
+}
+
+module.exports = { cleanRedirectUrl, cleanVisibleBody, stripDiacriticsAndNoise, extractJsonFromOutput, politeSleep,
   genVariants,
-  looksLikeRedirectStub,
+  looksLikeRedirectStubHtml,
   extractStubTarget,
   walkForUrls,
-  tryBase64DecodeCandidate
+  tryBase64DecodeCandidate,
+  Semaphore
  };

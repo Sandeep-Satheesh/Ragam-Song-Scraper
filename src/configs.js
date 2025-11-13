@@ -18,12 +18,6 @@ export const ENGINE_CONFIGS = {
     selectors: { block: '.result', title: '.result__a', link: '.result__a', snippet: '.result__snippet', next: 'a.result--more__btn' }
   },
 
-  yahoo: {
-    startUrl: 'https://search.yahoo.com/?ei=UTF-8', browser_config: { headless: true, setExtraHTTPHeaders: EN_HEADERS }, navigationTimeout: 45000, waitForSelectorTimeout: 30000,
-    queryUrl: q => `https://search.yahoo.com/search?p=${encodeURIComponent(q)}&ei=UTF-8`,
-    selectors: { block: 'div#web ol>li div>div', title: 'h3.title', link: 'h3.title a', snippet: 'div.compText p, p', next: 'a.next' }
-  },
-
   yandex: {
     startUrl: 'https://yandex.com/?lang=en', browser_config: { headless: true, setExtraHTTPHeaders: EN_HEADERS }, navigationTimeout: 45000, waitForSelectorTimeout: 30000,
     queryUrl: q => `https://yandex.com/search/?text=${encodeURIComponent(q)}&lr=213`,
@@ -48,42 +42,23 @@ export const ENGINE_CONFIGS = {
     queryUrl: q => `https://www.google.com/search?q=${encodeURIComponent(q)}&hl=en&num=10&pws=0`,
     selectors: { block: 'div.g, div.Gx5Zad', title: 'h3', link: 'a', snippet: 'div[data-sncf], div.VwiC3b, span.aCOpRe', next: 'a#pnnext, a[aria-label="Next"]' }
   },
-
-  baidu: {
-    startUrl: 'https://www.baidu.com/', browser_config: { headless: true, setExtraHTTPHeaders: EN_HEADERS }, navigationTimeout: 60000, waitForSelectorTimeout: 30000,
-    queryUrl: q => `https://www.baidu.com/s?wd=${encodeURIComponent(q)}&ie=utf-8&tn=baiduhome_pg`,
-    selectors: { block: 'div.result, div.c-container', title: 'h3 a', link: 'h3 a', snippet: 'div.c-abstract, div.content-right_8Zs40', next: 'a.n' }
-  },
-
-  aol: {
-    startUrl: 'https://search.aol.com/', browser_config: { headless: true, setExtraHTTPHeaders: EN_HEADERS }, navigationTimeout: 45000, waitForSelectorTimeout: 30000,
-    queryUrl: q => `https://search.aol.com/aol/search?q=${encodeURIComponent(q)}&ei=UTF-8`,
-    selectors: { block: 'div.algo', title: 'h3 a', link: 'h3 a', snippet: 'div.compText p', next: 'a.next' }
-  },
-
-  ask: {
-    startUrl: 'https://www.ask.com/', browser_config: { headless: true, setExtraHTTPHeaders: EN_HEADERS }, navigationTimeout: 45000, waitForSelectorTimeout: 30000,
-    queryUrl: q => `https://www.ask.com/web?q=${encodeURIComponent(q)}`,
-    selectors: { block: 'div.PartialSearchResults-item', title: 'a.PartialSearchResults-item-title-link', link: 'a.PartialSearchResults-item-title-link', snippet: 'p.PartialSearchResults-item-abstract', next: 'a.next' }
-  },
-
-  mojeek: {
-    startUrl: 'https://www.mojeek.com/', browser_config: { headless: true, setExtraHTTPHeaders: EN_HEADERS }, navigationTimeout: 45000, waitForSelectorTimeout: 30000,
-    queryUrl: q => `https://www.mojeek.com/search?q=${encodeURIComponent(q)}&s=0`,
-    selectors: { block: '#results li.result', title: 'a.result-title', link: 'a.result-title', snippet: 'p.s', next: 'a.next' }
-  },
-
-  naver: {
-    startUrl: 'https://search.naver.com/', browser_config: { headless: true, setExtraHTTPHeaders: EN_HEADERS }, navigationTimeout: 60000, waitForSelectorTimeout: 30000,
-    queryUrl: q => `https://search.naver.com/search.naver?query=${encodeURIComponent(q)}&where=web`,
-    selectors: { block: 'div.webdoc', title: 'a.title_link', link: 'a.title_link', snippet: 'div.total_dsc, div.dsc_txt', next: 'a.btn_next' }
-  },
-
-  seznam: {
-    startUrl: 'https://www.seznam.cz/', browser_config: { headless: true, setExtraHTTPHeaders: EN_HEADERS }, navigationTimeout: 45000, waitForSelectorTimeout: 30000,
-    queryUrl: q => `https://search.seznam.cz/?q=${encodeURIComponent(q)}`,
-    selectors: { block: 'div.Result', title: 'h3 a', link: 'h3 a', snippet: 'p.Result-snippet', next: 'a.Paging-link.next' }
-  },
 };
 
-export const RENDER_WAIT_SELECTOR = 'networkidle'
+export const MODEL_PROMPT_OPTS = {
+  temperature: 0.15,
+  top_k: 50,
+  frequency_penalty: 0.75,
+  presence_penalty: 0.55,
+  no_repeat_ngram_size: 3,
+  think: true,
+  stream: false,
+  stop: ["}]"]
+};
+
+export const RENDER_WAIT_MAIN_SELECTOR = 'networkidle'
+export const RENDER_WAIT_FALLBACK_SELECTOR = 'domcontentloaded'
+export const RENDER_WAIT_FALLBACK_MS = 1000;
+export const SCROLL_STEP = 1000;
+export const SCROLL_DELAY = 500;
+export const SCROLL_IDLE_ROUNDS = 3;
+export const SCROLL_MAX_ITER = 50;

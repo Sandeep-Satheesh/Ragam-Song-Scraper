@@ -1,4 +1,5 @@
 const { spawn, spawnSync } = require('child_process');
+const configs = require('./configs')
 
 let ollamaClient = null;
 try {
@@ -23,7 +24,7 @@ async function getMaxTokensForModel(modelId) {
 
     if (info && info.model_info && info.details && info.details.family) {
       //console.info('Model info for', id, info);
-      
+
       let family = info.details.family;
       let contextLengthKeyName = family + '.' + 'context_length';
 
@@ -44,11 +45,11 @@ async function getMaxTokensForModel(modelId) {
   if (id.includes('gpt-oss:120b') || id.includes('gpt-oss-120b') || id.includes('gpt-oss:120')) return 131072; // 128k
   if (id.includes('gpt-oss:20b') || id.includes('gpt-oss-20b') || id.includes('gpt-oss:20')) return 131072; // 128k (open-weight 20b supports large context)
   if (id.includes('qwen3-coder:480b') || id.includes('qwen3-coder') || id.includes('qwen3-coder:480b-cloud')) return 262144; // 256k
-  if (id.includes('gemma3:4b') || id.includes('gemma3-4b') || id.includes('gemma3:27b') || id.includes('gemma3:12b') ) return 131072; // 128k (large Gemma3 variants)
+  if (id.includes('gemma3:4b') || id.includes('gemma3-4b') || id.includes('gemma3:27b') || id.includes('gemma3:12b')) return 131072; // 128k (large Gemma3 variants)
   if (id.includes('gemma3:1b') || id.includes('gemma3-1b') || id.includes('gemma3:270m')) return 32768; // 32k for smaller Gemma3 variants
-  if (id.includes('deepseek-r1') || id.includes('deepseek-r1:') || id.includes('deepseek-r1') ) return 32768; // DeepSeek-R1 uses 32k max gen (per model card)
+  if (id.includes('deepseek-r1') || id.includes('deepseek-r1:') || id.includes('deepseek-r1')) return 32768; // DeepSeek-R1 uses 32k max gen (per model card)
   if (id.includes('mistral') || id.includes('mistral:latest') || id.includes('mistral-7b')) return 16384; // 16k sliding-window / practical limit
-  if (id.includes('20b') && id.includes('gpt-oss') ) return 131072; // catch-alls for gpt-oss 20b
+  if (id.includes('20b') && id.includes('gpt-oss')) return 131072; // catch-alls for gpt-oss 20b
   if (id.includes(':480b') || id.includes('480b')) return 262144; // generic 480b -> 256k
   if (id.includes('671b') || id.includes('deepseek-671') || id.includes('671')) return 163840; // some DeepSeek 671B variants advertise ~160k native (use with caution)
 
@@ -89,17 +90,18 @@ async function chooseBestModelForPrompt(availableModels, prompt, opts = {}) {
   const safetyPct = typeof opts.safetyPct === 'number' ? opts.safetyPct : 0.02;
   const minResponse = Number.isInteger(opts.minResponse) ? opts.minResponse : 2;
 
-  const capacities = (await Promise.allSettled(availableModels.map(async (m) => ({ name: m, cap: await getMaxTokensForModel(m) })))).map(r => {
-    if (r.status === 'fulfilled') return r.value;
-    return null;
-  }).filter(Boolean);
+  const capacities = (await Promise.allSettled(
+    availableModels.map(async (m) => ({ name: m, cap: await getMaxTokensForModel(m) }))
+  )).map(r => r.status === 'fulfilled' ? r.value : null).filter(Boolean);
   capacities.sort((a, b) => a.cap - b.cap);
 
   for (const c of capacities) {
-    const safetyBuffer = Math.max(absoluteSafety, Math.ceil(c.cap * safetyPct));
-    if (c.cap >= promptTokens + safetyBuffer + minResponse) return c.name;
+    const cap = c.cap;
+    const baselineOutput = Math.ceil(cap * 0.6);               // enforce 60% for output
+    const safetyBuffer = Math.max(absoluteSafety, Math.ceil(cap * safetyPct));
+    const requiredOutput = Math.max(baselineOutput, safetyBuffer + minResponse);
+    if (cap - promptTokens >= requiredOutput) return c.name;   // input fits 40% budget
   }
-  // none fit, return largest
   return capacities.length ? capacities[capacities.length - 1].name : null;
 }
 
@@ -154,7 +156,7 @@ async function runOllamaModelViaClient(model, prompt, responseTokens, timeoutMs 
     const chatPayload = {
       model,
       messages,
-      options: { temperature: 0, top_p: 1, max_tokens: maxTokens }
+      options: { ...configs.MODEL_PROMPT_OPTS, max_tokens: maxTokens,  max_new_tokens: Math.floor(0.7*maxTokens) }
     };
     const res = await ollamaClient.chat(chatPayload);
     return { content: res.message.content, thinking: res.message.thinking || null };
@@ -207,8 +209,9 @@ async function runOllamaModel(prompt, timeoutMs = 600000) {
 
   let available = await getAvailableModels();
   if (!available || available.length === 0) throw new Error('No ollama models available');
-  
+
   const promptTokens = estimateTokensFromText(prompt);
+  available = available.filter(model => !model.includes(':20b'))
 
   // pick a model that can hold prompt + safety + minimal response
   const pickedModel = await chooseBestModelForPrompt(available, prompt, { absoluteSafety: 256, safetyPct: 0.02, minResponse: 2 }) || available[0];

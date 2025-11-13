@@ -13,7 +13,8 @@
             ],
             "type": "node",
             "console": "integratedTerminal",
-            "args": "--ragam Kalyani"
+            "args": "--input-file Raga+Frequency.txt",
+            "envFile": "${workspaceFolder}/.env"
         }
     ]
 }
